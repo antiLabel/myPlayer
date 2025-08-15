@@ -1,4 +1,6 @@
-from PySide6.QtWidgets import QWidget, QPushButton, QSlider, QHBoxLayout, QVBoxLayout, QLabel, QStackedLayout
+# media_widgets.py (已重构)
+
+from PySide6.QtWidgets import QWidget, QPushButton, QSlider, QHBoxLayout, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt, QTimer, QEvent
 
 class PlayerUI(QWidget):
@@ -7,33 +9,15 @@ class PlayerUI(QWidget):
         self.icon_manager = icon_manager
         # 允许捕获鼠标移动事件，即使没有按下按钮
         self.setMouseTracking(True)
-        
 
         # --- 创建控件 ---
         # 视频层是基础
-        self.video_frame = QWidget(self)
-
-        self.overlay = QWidget(self)
-        self.overlay.setAttribute(Qt.WA_NativeWindow, True)
-        self.overlay.setStyleSheet("background: transparent;") 
-        
 
         # 控制层是悬浮的
-        self.control_widget = QWidget(self.overlay)
-        self.control_widget.setStyleSheet("background: transparent;")
-
-        stack = QStackedLayout(self)                 # 给 PlayerUI 装一个堆叠布局
-        stack.setStackingMode(QStackedLayout.StackAll)
-        stack.setContentsMargins(0, 0, 0, 0)
-        stack.addWidget(self.video_frame)            # 底层
-        stack.addWidget(self.overlay)                # 顶层（透明）
-        self.overlay.raise_()
-
-        # 把控制条贴到底部：overlay 自己再来个 VBox
-        ov = QVBoxLayout(self.overlay)
-        ov.setContentsMargins(8, 8, 8, 8)
-        ov.addStretch()
-        ov.addWidget(self.control_widget, 0, Qt.AlignBottom)
+        self.control_widget = QWidget(self)
+        self.control_widget.setStyleSheet("background-color: rgba(0, 0, 0, 150);")
+        self.video_frame = QWidget(self)
+        self.control_widget.setAttribute(Qt.WA_NativeWindow, True)
 
         self.current_time_label = QLabel("00:00")
         self.total_time_label = QLabel("00:00")
@@ -78,9 +62,9 @@ class PlayerUI(QWidget):
         self.volume_slider.setEnabled(False)
 
     def _setup_control_layout(self):
-        """为悬浮控制面板设置布局"""
+        
         layout = QHBoxLayout(self.control_widget)
-
+        layout.setContentsMargins(10, 5, 10, 5)
         layout.addWidget(self.play_button)
         layout.addWidget(self.current_time_label)
         layout.addWidget(self.slider)
@@ -91,7 +75,20 @@ class PlayerUI(QWidget):
 
     # --- 事件重写，用于实现悬浮效果 ---
 
-        
+    def resizeEvent(self, event):
+        """当窗口大小改变时，手动重新定位视频层和控制层"""
+        super().resizeEvent(event)
+        # 视频层始终填满整个控件
+        self.video_frame.setGeometry(self.rect())
+        # 控制层位于底部，并留出一些边距
+        control_height = self.control_widget.sizeHint().height()
+        margin = 0
+        self.control_widget.setGeometry(
+            margin, 
+            self.height() - control_height - margin, 
+            self.width() - 2 * margin, 
+            control_height
+        )
 
     def enterEvent(self, event):
         """鼠标进入播放器区域时，显示控制栏"""
