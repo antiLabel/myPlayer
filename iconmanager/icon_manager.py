@@ -80,8 +80,8 @@ class IconManager:
         return self._create_colored_icon('pause.svg')
     
 
-    def get_volume_up_icon(self) -> QIcon:
-        return self._create_colored_icon('volume_up.svg')
+    def get_volume_high_icon(self) -> QIcon:
+        return self._create_colored_icon('volume_high.svg')
     
     def get_volume_off_icon(self) -> QIcon:
         return self._create_colored_icon('volume_off.svg')

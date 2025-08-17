@@ -7,17 +7,14 @@ class PlayerUI(QWidget):
     def __init__(self, icon_manager, parent=None):
         super().__init__(parent)
         self.icon_manager = icon_manager
-        # 允许捕获鼠标移动事件，即使没有按下按钮
-        self.setMouseTracking(True)
 
         # --- 创建控件 ---
         # 视频层是基础
-
+        self.video_frame = QWidget(self)
         # 控制层是悬浮的
         self.control_widget = QWidget(self)
-        self.control_widget.setStyleSheet("background-color: rgba(0, 0, 0, 150);")
-        self.video_frame = QWidget(self)
-        self.control_widget.setAttribute(Qt.WA_NativeWindow, True)
+        # 固定的控制层
+        self.fixed_control_widget = QWidget(self)
 
         self.current_time_label = QLabel("00:00")
         self.total_time_label = QLabel("00:00")
@@ -28,6 +25,7 @@ class PlayerUI(QWidget):
 
         self._setup_widgets_properties()
         self._setup_control_layout()
+        
 
         # --- 事件处理与定时器 ---
         self.volume_hide_timer = QTimer(self)
@@ -40,8 +38,13 @@ class PlayerUI(QWidget):
         self.volume_slider.installEventFilter(self)
 
         # 初始状态下，隐藏所有控件
-        self.control_widget.hide()
         self.volume_slider.hide()
+
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(self.video_frame, 1)
+        main_layout.addWidget(self.slider)
+        main_layout.addWidget(self.control_widget)
+        self.setLayout(main_layout)
 
     def _setup_widgets_properties(self):
         """配置控件的属性"""
@@ -52,53 +55,25 @@ class PlayerUI(QWidget):
 
         self.slider.setRange(0, 0)
 
-        self.mute_button.setIcon(self.icon_manager.get_volume_up_icon())
+        self.mute_button.setIcon(self.icon_manager.get_volume_high_icon())
         self.mute_button.setFlat(True)
         self.mute_button.setEnabled(False)
-
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
         self.volume_slider.setFixedWidth(100)
         self.volume_slider.setEnabled(False)
 
+
     def _setup_control_layout(self):
         
-        layout = QHBoxLayout(self.control_widget)
-        layout.setContentsMargins(10, 5, 10, 5)
+        layout = QHBoxLayout(self)
         layout.addWidget(self.play_button)
         layout.addWidget(self.current_time_label)
-        layout.addWidget(self.slider)
         layout.addWidget(self.total_time_label)
         layout.addStretch()
         layout.addWidget(self.volume_slider)
         layout.addWidget(self.mute_button)
-
-    # --- 事件重写，用于实现悬浮效果 ---
-
-    def resizeEvent(self, event):
-        """当窗口大小改变时，手动重新定位视频层和控制层"""
-        super().resizeEvent(event)
-        # 视频层始终填满整个控件
-        self.video_frame.setGeometry(self.rect())
-        # 控制层位于底部，并留出一些边距
-        control_height = self.control_widget.sizeHint().height()
-        margin = 0
-        self.control_widget.setGeometry(
-            margin, 
-            self.height() - control_height - margin, 
-            self.width() - 2 * margin, 
-            control_height
-        )
-
-    def enterEvent(self, event):
-        """鼠标进入播放器区域时，显示控制栏"""
-        super().enterEvent(event)
-        self.control_widget.show()
-
-    def leaveEvent(self, event):
-        """鼠标离开播放器区域时，隐藏控制栏"""
-        super().leaveEvent(event)
-        self.control_widget.hide()
+        self.control_widget.setLayout(layout)
 
     def eventFilter(self, watched, event):
         """
@@ -116,6 +91,8 @@ class PlayerUI(QWidget):
                 return True  # 事件已处理
 
         return super().eventFilter(watched, event)
+    
+
 
     # --- 用于更新UI的公共槽函数 ---
 
@@ -151,4 +128,4 @@ class PlayerUI(QWidget):
         if is_muted:
             self.mute_button.setIcon(self.icon_manager.get_volume_off_icon())
         else:
-            self.mute_button.setIcon(self.icon_manager.get_volume_up_icon())
+            self.mute_button.setIcon(self.icon_manager.get_volume_high_icon())
