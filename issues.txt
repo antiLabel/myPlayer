@@ -267,3 +267,87 @@ if __name__ == "__main__":
 ---
 
 再次为刚才把示例写成 PyQt 跟你说声抱歉 🙏。你把这三块加上跑一遍，把控制台出现的 **`[KHR]`** 和 **`[FBO]`** 行贴给我，我就能直接根据证据给你下一步的精准修复路径。
+Q：我已经更新了我的代码以及日志嗯，请你分析
+好的，非常感谢您提供这次更新。您集成高级调试工具并提供新日志的做法非常专业，这让我们获得了决定性的线索，距离解决问题仅一步之遥。
+
+### 综合分析
+
+根据您最新的代码和日志文件，我已经定位了问题的最终症结。
+
+**1. 关键的新证据 (`terminal.md`)**
+
+您集成的 `GLDiagnostics` 调试工具为我们带来了最有价值的信息：
+
+```
+[FBO] after-initializeGL bound=0, status=GL_FRAMEBUFFER_COMPLETE
+[FBO] before-paint bound=0, status=GL_FRAMEBUFFER_COMPLETE
+[FBO] after-paint bound=0, status=GL_FRAMEBUFFER_COMPLETE
+```
+
+  * **这意味着什么？** 这几行日志确认了由 Qt 创建的帧缓冲对象（FBO）本身是**完整且有效的 (GL\_FRAMEBUFFER\_COMPLETE)**。这是一个巨大的进步，因为它排除了 FBO 自身配置错误（比如缺少颜色附件）的可能性。
+  * **问题聚焦**：既然 FBO 是完整的，但 `mpv` 在其上渲染时依然报错 `GL_INVALID_ENUM ... <attachment> does not specify a valid attachment`，这几乎可以 100% 确定：**问题在于 `mpv` 的渲染引擎期望 FBO 具备某些 Qt 默认没有提供的“可选附件”，特别是深度/模板缓冲。**
+
+**2. 代码中的两个关键疏漏**
+
+通过比对您上传的最新代码和我们之前的解决方案 (`issues.txt`)，我发现了两个关键的修改没有被应用，这正是导致问题持续存在的根本原因：
+
+  * **疏漏一：`set_default_gl_format.py` 未更新**
+    您当前的 `set_default_gl_format.py` 文件还是初始版本。它缺少了我们在 `issues.txt` 中讨论过的，用于添加深度和模板缓冲区的关键代码。`mpv` 渲染时很可能需要深度信息，当它尝试访问一个不存在的深度附件时，驱动就会抛出我们看到的这个错误。
+
+  * **疏漏二：`media_player.py` 未更新**
+    您当前的 `media_player.py` 文件中，创建 `mpv.MPV` 实例的代码还是初始版本。它缺少了我们之前讨论过的 `fbo_format='rgba8'` 参数。这个参数用于明确告知 `mpv` 它将要渲染的目标 FBO 的颜色格式，避免因格式不匹配而引发的潜在问题。
+
+### 最终解决方案
+
+请您同时应用以下**两个修改**。这两项修改结合在一起，有极大概率能彻底解决这个渲染问题。
+
+**第一步：修改 `set_default_gl_format.py`**
+
+请将此文件的内容**完全替换**为以下版本，以确保开启深度和模板缓冲：
+
+```python
+# ---- set_default_gl_format.py ----
+from PySide6.QtGui import QSurfaceFormat
+
+def enable_debug_gl_default_format():
+    fmt = QSurfaceFormat()
+    fmt.setVersion(3, 3)
+    fmt.setProfile(QSurfaceFormat.CoreProfile)
+    fmt.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
+    
+    # --- ↓↓↓ 关键补充：请求深度和模板缓冲区 ↓↓↓ ---
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    # --- ↑↑↑ 关键补充结束 ↑↑↑ ---
+
+    fmt.setOption(QSurfaceFormat.DebugContext, on=True)
+    QSurfaceFormat.setDefaultFormat(fmt)
+```
+
+**第二步：修改 `media_player.py`**
+
+请打开此文件，在 `mpv.MPV(...)` 的初始化中，**添加 `fbo_format='rgba8'`** 这一行：
+
+```python
+# media_player.py (片段)
+# ...
+class MediaPlayerService(QObject):
+    # ...
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._player = mpv.MPV(
+            vo='libmpv',
+            # --- ↓↓↓ 在这里添加下面这行代码 ↓↓↓ ---
+            fbo_format='rgba8',
+            # --- ↑↑↑ 在这里添加上面这行代码 ↑↑↑ ---
+            msg_level="all=no",
+            log_handler=print
+        )
+# ...
+```
+
+-----
+
+请您完成这两处修改后，再次运行程序。根据我们现在掌握的所有证据，这次应该可以成功消除 OpenGL 的错误。
+
+您的耐心和细致的日志记录是解决这个复杂问题的关键，我们离成功非常近了！

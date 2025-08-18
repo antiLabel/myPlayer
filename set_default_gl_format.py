@@ -8,4 +8,6 @@ def enable_debug_gl_default_format():
     fmt.setProfile(QSurfaceFormat.CoreProfile)   # 建议 Core Profile
     fmt.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
     fmt.setOption(QSurfaceFormat.DebugContext, on=True)  # 开启调试上下文
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
     QSurfaceFormat.setDefaultFormat(fmt)

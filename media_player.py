@@ -14,6 +14,7 @@ class MediaPlayerService(QObject):
         super().__init__(parent)
         self._player = mpv.MPV(
             vo='libmpv',
+            fbo_format='rgba8',
             msg_level = "all=no",
             log_handler=print # 打印MPV的日志，方便调试
         )
