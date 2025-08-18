@@ -2,10 +2,11 @@ from mpv import MpvRenderContext, MpvGlGetProcAddressFn
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGL import QOpenGLVersionProfile, QOpenGLDebugLogger, QOpenGLDebugMessage
+from tools.debug_gl import GLDiagnostics
 
 class MPVWidget(QOpenGLWidget):
     def __init__(self, player_service, parent=None):
-        self._gl_logger = None
+        self._diag = None
         
         super().__init__(parent)
         self.player = player_service.get_player_handle()
@@ -32,9 +33,14 @@ class MPVWidget(QOpenGLWidget):
         )
         # 回调挂在渲染上下文
         self.ctx.update_cb = self.update
-        self._start_gl_debug_logger()
+        self._diag = GLDiagnostics(self.context())
+        self._diag.start()
+        self._diag.check_fbo("after-initializeGL")
 
     def paintGL(self):
+        if self._diag:
+            self._diag.check_fbo("before-paint")
+
         if not self.ctx:
             return
         dpr = self.devicePixelRatioF()  # Qt6 推荐
@@ -50,6 +56,8 @@ class MPVWidget(QOpenGLWidget):
             assert w > 0 and h > 0, "错误：画布尺寸 (width/height) 无效！"
         # --- 结束调试代码 ---
         self.ctx.render(opengl_fbo={'fbo': fbo, 'w': w, 'h': h}, flip_y=True)
+        if self._diag:
+            self._diag.check_fbo("after-paint")
 
     def closeEvent(self, e):
         if self.ctx:
@@ -64,35 +72,3 @@ class MPVWidget(QOpenGLWidget):
             if self.ctx:
                 print("MPVWidget: Disabling update callback.")
                 self.ctx.update_cb = None
-
-
-    def _start_gl_debug_logger(self):
-            ctx = QOpenGLContext.currentContext()
-            if not ctx:
-                return  # 理论上不会发生；保险起见
-
-            # 检查是否支持 KHR_debug（大多数桌面驱动都支持）
-            if not ctx.hasExtension(b"GL_KHR_debug"):
-                print("[GLDBG] GL_KHR_debug not supported; no driver-side messages.")
-                return
-
-            logger = QOpenGLDebugLogger(self)
-            if not logger.initialize():
-                print("[GLDBG] QOpenGLDebugLogger initialize() failed.")
-                return
-
-            def on_msg(msg: QOpenGLDebugMessage):
-                # 常用字段：来源、类型、严重级别、ID、文本
-                print(
-                    "[GLDBG]",
-                    f"src={msg.source()}, type={msg.type()}, sev={msg.severity()}, id={msg.id()}",
-                    msg.message()
-                )
-
-            logger.messageLogged.connect(on_msg)
-
-            # 同步模式：每条消息立即回调，便于和你的日志/断言对上时序
-            logger.startLogging(QOpenGLDebugLogger.SynchronousLogging)
-
-            self._gl_logger = logger
-            print("[GLDBG] OpenGL debug logger started.")

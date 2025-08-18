@@ -60,3 +60,210 @@ def enable_debug_gl_default_format():
 添加这行代码后，Qt 在为您的 `MPVWidget` 创建 OpenGL 上下文时，会附带一个深度缓冲区。这通常就能满足 `mpv` 渲染引擎的需求，从而解决这个 `GL_INVALID_ENUM` 的错误。
 
 总而言之，您提供的调试信息非常充分和专业，让我能够快速、准确地定位并解决问题。以后遇到问题，也推荐您采用这种方式。
+验证：无效，仍然是一样的报错
+
+q:如果你愿意，我可以基于你现有日志与代码，直接给出一份最小化“定位脚本/补丁”（包含 glCheckFramebufferStatus、KHR_debug 回调、以及 mpv ↔ Qt FBO 参数的核对清单），这样你就能很快验证到底是枚举传参还是FBO 配置契约的问题。愿意
+ai 2:你说得对，是我刚才口误；我应该按 **PySide6** 来给你补丁。抱歉！我现在给你一套 **PySide6 版** 的“最小化定位补丁”，你直接拷贝到仓库就能用。
+
+---
+
+# 1) 启用 DebugContext + 更稳默认格式
+
+**文件：`set_default_gl_format.py`**（PySide6 版本，直接替换即可）
+
+```python
+# set_default_gl_format.py  —— PySide6
+from PySide6.QtGui import QSurfaceFormat
+
+def enable_debug_gl_default_format():
+    fmt = QSurfaceFormat()
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)                       # 建议同时启用 8-bit stencil
+    fmt.setOption(QSurfaceFormat.DebugContext, True)  # 开启 KHR_debug
+    try:
+        fmt.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
+    except Exception:
+        pass
+    QSurfaceFormat.setDefaultFormat(fmt)
+```
+
+> 放心：只依赖 PySide6，自带类与枚举，不需要任何三方库。
+> 记得在 **创建 `QApplication` 之前** 调用 `enable_debug_gl_default_format()`。
+
+---
+
+# 2) 轻量调试工具（KHR\_debug + FBO 自检）
+
+**新文件：`tools/debug_gl.py`**
+
+```python
+# tools/debug_gl.py  —— 仅 PySide6
+from dataclasses import dataclass
+from typing import Optional
+
+from PySide6.QtCore import QObject, Slot
+from PySide6.QtGui import (
+    QOpenGLDebugLogger, QOpenGLDebugMessage, QOpenGLExtraFunctions
+)
+
+# 常量（避免引 PyOpenGL）
+GL_FRAMEBUFFER = 0x8D40
+GL_FRAMEBUFFER_BINDING = 0x8CA6
+GL_FRAMEBUFFER_COMPLETE = 0x8CD5
+
+_STATUS_NAME = {
+    0x8CD5: "GL_FRAMEBUFFER_COMPLETE",
+    0x8CD6: "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT",
+    0x8CD7: "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT",
+    0x8CDB: "GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER",
+    0x8CDC: "GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER",
+    0x8CDD: "GL_FRAMEBUFFER_UNSUPPORTED",
+    0x8CDF: "GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE",
+    0x8D56: "GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS",
+}
+
+@dataclass
+class GLDiagHandles:
+    logger: Optional[QOpenGLDebugLogger]
+    funcs: QOpenGLExtraFunctions
+
+class GLDiagnostics(QObject):
+    """
+    用法（在 QOpenGLWidget.initializeGL() 里）：
+        self._diag = GLDiagnostics(self.context())
+        self._diag.start()
+        self._diag.check_fbo("after-init")
+    然后在 paintGL() 前后各调一次 check_fbo()。
+    """
+
+    def __init__(self, gl_context):
+        super().__init__()
+        self._ctx = gl_context
+        self._logger: Optional[QOpenGLDebugLogger] = None
+        self._funcs = QOpenGLExtraFunctions(self._ctx)
+        self._funcs.initializeOpenGLFunctions()
+
+    def start(self) -> GLDiagHandles:
+        # 需要 DebugContext 已启用；此时当前上下文就是 QOpenGLWidget 的 context()
+        self._logger = QOpenGLDebugLogger(self._ctx)
+        if not self._logger.initialize():
+            print("[GLDiag] QOpenGLDebugLogger.initialize() 失败（可能未启用 DebugContext）")
+            return GLDiagHandles(None, self._funcs)
+
+        self._logger.messageLogged.connect(self._on_message)
+        # 同步模式：哪条 gl* 语句触发，立即打印
+        self._logger.startLogging(QOpenGLDebugLogger.LoggingMode.SynchronousLogging)
+        print("[GLDiag] KHR_debug 已启动（同步模式）")
+        return GLDiagHandles(self._logger, self._funcs)
+
+    @Slot(QOpenGLDebugMessage)
+    def _on_message(self, msg: QOpenGLDebugMessage):
+        print(
+            f"[KHR] id={msg.id()} src={msg.source().name} "
+            f"type={msg.type().name} sev={msg.severity().name} :: {msg.message()}"
+        )
+
+    def check_fbo(self, tag: str = ""):
+        f = self._funcs
+
+        # 读取当前绑定 FBO
+        try:
+            from ctypes import c_int
+            buf = (c_int * 1)()
+            f.glGetIntegerv(GL_FRAMEBUFFER_BINDING, buf)
+            bound = int(buf[0])
+        except Exception:
+            bound = -1
+
+        # 完整性检查
+        try:
+            status = int(f.glCheckFramebufferStatus(GL_FRAMEBUFFER))
+        except Exception as e:
+            print(f"[GLDiag] glCheckFramebufferStatus 失败: {e!r}")
+            return
+
+        status_name = _STATUS_NAME.get(status, hex(status))
+        prefix = f"[FBO] {tag} " if tag else "[FBO] "
+        print(f"{prefix}bound={bound}, status={status_name}")
+        if status != GL_FRAMEBUFFER_COMPLETE:
+            print("[FBO] ⚠️ 不完整 —— 请核对附件/DrawBuffers/多重采样/层目标等。")
+```
+
+---
+
+# 3) 在你的 OpenGL 小部件接入
+
+**以 `mpv_widget.py` 为例**（仅示意最小改动；粘进去相应位置即可）
+
+```python
+# mpv_widget.py （片段）
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from tools.debug_gl import GLDiagnostics
+
+class MPVWidget(QOpenGLWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._diag = None
+
+    def initializeGL(self):
+        # 你现有的初始化（mpv GL 回调 / 纹理等）……
+        self._diag = GLDiagnostics(self.context())
+        self._diag.start()
+        self._diag.check_fbo("after-initializeGL")
+
+    def paintGL(self):
+        if self._diag:
+            self._diag.check_fbo("before-paint")
+        # 你现有的绘制流程（mpv 渲染/自绘）……
+        if self._diag:
+            self._diag.check_fbo("after-paint")
+```
+
+---
+
+# 4) 独立可运行的最小验证脚本（可选）
+
+**新文件：`scripts/quick_fbo_probe.py`**（用于快速验证本机驱动/KHR\_debug）
+
+```python
+# scripts/quick_fbo_probe.py  —— PySide6
+import sys
+from PySide6.QtWidgets import QApplication
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from set_default_gl_format import enable_debug_gl_default_format
+from tools.debug_gl import GLDiagnostics
+
+class Probe(QOpenGLWidget):
+    def initializeGL(self):
+        self._diag = GLDiagnostics(self.context())
+        self._diag.start()
+        self._diag.check_fbo("probe-init")
+
+    def paintGL(self):
+        self._diag.check_fbo("probe-paint")
+
+if __name__ == "__main__":
+    enable_debug_gl_default_format()
+    app = QApplication(sys.argv)
+    w = Probe()
+    w.resize(360, 220)
+    w.show()
+    sys.exit(app.exec())
+```
+
+---
+
+## 如何解读输出
+
+* 若出现
+  `"[KHR] … :: GL_INVALID_ENUM was generated by glFramebufferTexture…"`
+  → **枚举传参问题**：检查 `attachment` 是否仅用 `GL_COLOR_ATTACHMENTi / GL_DEPTH_ATTACHMENT / GL_STENCIL_ATTACHMENT`；以及目标与纹理/渲染缓冲维度是否匹配。
+* 若
+  `[FBO] … status=GL_FRAMEBUFFER_INCOMPLETE_*`
+  → **FBO 契约/配置问题**：缺附件、`glDrawBuffers` 与颜色附件不匹配、MSAA/层目标不一致等。
+* 两者都正常
+  → 优先检查 **mpv ↔ QOpenGLWidget** 的对接契约（谁负责绑定/解绑 FBO、翻转、上下文线程归属等）。
+
+---
+
+再次为刚才把示例写成 PyQt 跟你说声抱歉 🙏。你把这三块加上跑一遍，把控制台出现的 **`[KHR]`** 和 **`[FBO]`** 行贴给我，我就能直接根据证据给你下一步的精准修复路径。
